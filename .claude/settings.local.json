@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Read(//private/tmp/**)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"TSC_EXIT:$?\")",
+      "Bash(pkill -f \"uvicorn app.main:app\")"
+    ]
+  }
+}
