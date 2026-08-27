@@ -12,6 +12,7 @@ export default function JobDetailDrawer() {
   const selectJob = useStore((s) => s.selectJob);
   const session = useStore((s) => s.session);
   const setApplyRun = useStore((s) => s.setApplyRun);
+  const bumpTracker = useStore((s) => s.bumpTracker);
 
   const [row, setRow] = useState<RankedJob | null>(null);
   const [preparing, setPreparing] = useState(false);
@@ -31,6 +32,7 @@ export default function JobDetailDrawer() {
     try {
       const apply = await jobsApi.prepareApply(jobId, session?.session_id ?? null);
       setApplyRun(apply);
+      bumpTracker();
       selectJob(null);
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Prepare failed");

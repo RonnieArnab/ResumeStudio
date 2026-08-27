@@ -13,5 +13,6 @@ for _d in (JOBS_DIR, APPLY_SHOTS_DIR, RESUME_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 
-def screenshot_path(run_id: str) -> Path:
-    return APPLY_SHOTS_DIR / f"{run_id}.png"
+def screenshot_path(run_id: str, step: int = 0) -> Path:
+    suffix = "" if step == 0 else f"-{step}"
+    return APPLY_SHOTS_DIR / f"{run_id}{suffix}.png"

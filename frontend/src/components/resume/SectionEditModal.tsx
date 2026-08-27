@@ -1,18 +1,25 @@
 import { useState } from "react";
-import { Button, Group, Modal, Stack, Text, Textarea } from "@mantine/core";
-import { applyDiff, getStagedDiff, rejectDiff, streamSectionEdit } from "../../api/agentStream";
+import { Badge, Button, Group, Modal, Paper, Stack, Text, Textarea } from "@mantine/core";
+import { IconBulb } from "@tabler/icons-react";
+import { applyDiff, getStagedDiff, listStagedDiffs, rejectDiff, streamSectionEdit } from "../../api/agentStream";
 import { getResume } from "../../api/resume";
 import { useStore } from "../../state/store";
 import { notify } from "../../lib/notify";
 import type { AgentEvent, StagedEditSummary } from "../../types/agent";
-import ActivityTimeline from "./ActivityTimeline";
-import DiffLinesView from "./DiffLinesView";
+import AgentActivity from "./AgentActivity";
+import ChangeDiff from "./ChangeDiff";
 
 interface SectionEditModalProps {
   sessionId: string;
   sectionId: string | null;
   onClose: () => void;
 }
+
+const SUGGESTIONS = [
+  "Make the bullets more quantified and impact-first",
+  "Tighten wording and remove filler",
+  "Tailor this to the attached job description",
+];
 
 export default function SectionEditModal({ sessionId, sectionId, onClose }: SectionEditModalProps) {
   const [instruction, setInstruction] = useState("");
@@ -21,19 +28,18 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
   const [diff, setDiff] = useState<StagedEditSummary | null>(null);
   const [applying, setApplying] = useState(false);
   const setSession = useStore((s) => s.setSession);
+  const setStagedEdits = useStore((s) => s.setStagedEdits);
 
-  const reset = () => {
+  const close = () => {
     setInstruction("");
     setEvents([]);
     setDiff(null);
     setRunning(false);
     setApplying(false);
-  };
-
-  const close = () => {
-    reset();
     onClose();
   };
+
+  const syncStaged = async () => setStagedEdits(await listStagedDiffs(sessionId).catch(() => []));
 
   async function run() {
     if (!instruction.trim() || running || !sectionId) return;
@@ -47,7 +53,10 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
         if (event.type === "section_proposed") proposed = true;
         if (event.type === "error") notify.error(event.message);
       });
-      if (proposed) setDiff(await getStagedDiff(sessionId, sectionId));
+      if (proposed) {
+        setDiff(await getStagedDiff(sessionId, sectionId));
+        void syncStaged();
+      }
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Agent run failed");
     } finally {
@@ -61,6 +70,7 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
     try {
       await applyDiff(sessionId, [sectionId]);
       setSession(await getResume(sessionId));
+      await syncStaged();
       notify.success("Section updated");
       close();
     } catch (err) {
@@ -75,6 +85,7 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
     setApplying(true);
     try {
       await rejectDiff(sessionId, [sectionId]);
+      await syncStaged();
       setDiff(null);
       setEvents([]);
     } catch (err) {
@@ -88,7 +99,16 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
     <Modal
       opened={sectionId !== null}
       onClose={close}
-      title={sectionId ? `Edit "${sectionId}" section` : "Edit section"}
+      title={
+        <Group gap={8}>
+          <Text fw={600}>Edit section</Text>
+          {sectionId && (
+            <Badge variant="light" tt="capitalize">
+              {sectionId}
+            </Badge>
+          )}
+        </Group>
+      }
       size="lg"
       centered
     >
@@ -100,7 +120,7 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
               placeholder="e.g. make this bullet more quantified and lead with impact"
               autosize
               minRows={2}
-              maxRows={5}
+              maxRows={6}
               value={instruction}
               disabled={running}
               onChange={(e) => setInstruction(e.currentTarget.value)}
@@ -111,6 +131,19 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
                 }
               }}
             />
+            <Group gap={6}>
+              {SUGGESTIONS.map((s) => (
+                <Badge
+                  key={s}
+                  variant="outline"
+                  color="gray"
+                  style={{ cursor: "pointer", textTransform: "none" }}
+                  onClick={() => setInstruction(s)}
+                >
+                  {s}
+                </Badge>
+              ))}
+            </Group>
             <Group justify="flex-end">
               <Button onClick={run} loading={running} disabled={!instruction.trim()}>
                 Propose edit
@@ -119,23 +152,41 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
           </>
         )}
 
-        {events.length > 0 && <ActivityTimeline events={events} />}
+        {(events.length > 0 || running) && <AgentActivity events={events} running={running} />}
 
         {diff && (
-          <Stack gap="xs">
-            <Text size="sm" c="dimmed">
-              {diff.rationale}
-            </Text>
-            <DiffLinesView oldText={diff.old_latex} newText={diff.new_latex} />
+          <Stack gap="sm">
+            <ChangeDiff oldLatex={diff.old_latex} newLatex={diff.new_latex} />
+            {diff.rationale && (
+              <Group
+                gap={6}
+                wrap="nowrap"
+                align="flex-start"
+                style={{ background: "var(--mantine-color-default-hover)", borderRadius: 6, padding: "6px 8px" }}
+              >
+                <IconBulb size={13} style={{ marginTop: 2 }} />
+                <Text size="xs" c="dimmed">
+                  {diff.rationale}
+                </Text>
+              </Group>
+            )}
             <Group justify="flex-end">
               <Button variant="default" color="red" onClick={reject} loading={applying}>
                 Reject
               </Button>
-              <Button onClick={accept} loading={applying}>
+              <Button color="teal" onClick={accept} loading={applying}>
                 Accept &amp; recompile
               </Button>
             </Group>
           </Stack>
+        )}
+
+        {!diff && !running && events.length > 0 && (
+          <Paper withBorder p="xs" radius="sm">
+            <Text size="xs" c="dimmed">
+              The agent didn't propose a change. Try rephrasing your instruction.
+            </Text>
+          </Paper>
         )}
       </Stack>
     </Modal>

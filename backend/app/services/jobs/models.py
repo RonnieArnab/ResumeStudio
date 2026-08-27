@@ -20,7 +20,7 @@ SourceKind = Literal["board", "search"]
 CONNECTED_PROVIDERS: tuple[str, ...] = ("linkedin", "wellfound")
 
 FieldKind = Literal[
-    "text", "email", "tel", "url", "number", "textarea", "select", "file", "checkbox", "radio", "unknown"
+    "text", "email", "tel", "url", "number", "textarea", "select", "combobox", "file", "checkbox", "radio", "unknown"
 ]
 
 FieldSource = Literal["profile", "generated", "default", "empty", "user"]
@@ -85,6 +85,11 @@ class PrepareUrlRequest(BaseModel):
     resume_session_id: str | None = None
 
 
+class AutofillProfileRequest(BaseModel):
+    resume_session_id: str
+    overwrite: bool = False
+
+
 # --------------------------------------------------------------------------- #
 # Job postings + matching                                                      #
 # --------------------------------------------------------------------------- #
@@ -126,6 +131,10 @@ class CrawlRequest(BaseModel):
     min_score: int = 0
     location_contains: str | None = None
     remote_only: bool = False
+    # Only keep postings newer than this many days (None = any age).
+    posted_within_days: int | None = None
+    # The seniority the user is targeting; feeds the match prompt + a soft filter.
+    target_years_experience: int | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -177,6 +186,13 @@ class FormField(BaseModel):
     option_selectors: dict[str, str] = Field(default_factory=dict, exclude=True)
 
 
+class ApplyStep(BaseModel):
+    index: int
+    title: str
+    screenshot_url: str
+    note: str = ""
+
+
 class ApplyRunView(BaseModel):
     run_id: str
     job_id: str
@@ -185,6 +201,7 @@ class ApplyRunView(BaseModel):
     status: RunStatus
     fields: list[FormField]
     screenshot_url: str
+    steps: list[ApplyStep] = []
     captcha_detected: bool = False
     manual_only: bool = False
     notes: list[str] = []
@@ -211,17 +228,25 @@ class ApplyRun:
     status: RunStatus = "filling"
     fields: list[FormField] = field(default_factory=list)
     captcha_detected: bool = False
-    # LinkedIn/Wellfound: filled page 1 in the user's browser; they finish there.
+    # LinkedIn/Wellfound/multi-step: user finishes in the open browser window.
     manual_only: bool = False
     notes: list[str] = field(default_factory=list)
     confirmation_text: str | None = None
+    # (step_index, title, note) per captured screenshot.
+    step_meta: list[tuple[int, str, str]] = field(default_factory=list)
     # Live Playwright handles — present only while the run is in memory.
     page: object | None = None
     context: object | None = None
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
 
-    def to_view(self, screenshot_url: str) -> ApplyRunView:
+    def to_view(self, screenshot_url_for) -> ApplyRunView:
+        """`screenshot_url_for(step_index) -> str` builds a cache-busted URL."""
+        steps = [
+            ApplyStep(index=i, title=title, screenshot_url=screenshot_url_for(i), note=note)
+            for (i, title, note) in self.step_meta
+        ]
+        latest = steps[-1].screenshot_url if steps else screenshot_url_for(0)
         return ApplyRunView(
             run_id=self.run_id,
             job_id=self.job.id,
@@ -229,7 +254,8 @@ class ApplyRun:
             company=self.job.company,
             status=self.status,
             fields=self.fields,
-            screenshot_url=screenshot_url,
+            screenshot_url=latest,
+            steps=steps,
             captcha_detected=self.captcha_detected,
             manual_only=self.manual_only,
             notes=self.notes,

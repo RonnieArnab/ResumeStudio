@@ -21,6 +21,7 @@ from app.services.jobs.crawl import run_crawl
 from app.services.jobs.crawl_store import crawl_store
 from app.services.jobs.models import (
     AddSourceRequest,
+    AutofillProfileRequest,
     ApplicantProfile,
     ApplyRunView,
     BoardSource,
@@ -39,6 +40,15 @@ from app.services.jobs.models import (
 from app.services.jobs.profile_store import load_profile, save_profile
 from app.services.jobs.resume_text import latex_to_plain_text
 from app.services.jobs.storage import RESUME_DIR, screenshot_path
+from app.services.jobs.tracker import (
+    Application,
+    ApplicationCreate,
+    ApplicationUpdate,
+    add_application,
+    delete_application,
+    list_applications,
+    update_application,
+)
 from app.services.latex.compiler import COMPILED_ROOT
 from app.services.session.session_store import session_store
 
@@ -78,6 +88,41 @@ async def delete_source(source_id: str) -> dict[str, bool]:
 @router.get("/registry", response_model=list[RegistryEntry])
 async def company_registry(q: str = "") -> list[RegistryEntry]:
     return search_registry(q)
+
+
+@router.get("/cdp/status")
+async def cdp_status() -> dict:
+    from app.services.jobs.apply import cdp
+
+    return await cdp.describe()
+
+
+# --------------------------------------------------------------------------- #
+# Applied-jobs tracker                                                         #
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/applications", response_model=list[Application])
+async def get_applications() -> list[Application]:
+    return list_applications()
+
+
+@router.post("/applications", response_model=Application)
+async def create_application(body: ApplicationCreate) -> Application:
+    return add_application(body)
+
+
+@router.patch("/applications/{app_id}", response_model=Application)
+async def patch_application(app_id: str, body: ApplicationUpdate) -> Application:
+    updated = update_application(app_id, body)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return updated
+
+
+@router.delete("/applications/{app_id}")
+async def remove_application(app_id: str) -> dict[str, bool]:
+    return {"removed": delete_application(app_id)}
 
 
 # --------------------------------------------------------------------------- #
@@ -124,6 +169,20 @@ async def connect_delete(provider: str) -> dict[str, bool]:
     return {"removed": connected.disconnect(provider)}
 
 
+@router.post("/connect/{provider}/open-login")
+async def connect_open_login(provider: str) -> dict:
+    """Open the provider's sign-in page in a new tab of the user's running
+    Chrome (needs the CDP connection)."""
+    if provider not in (*CONNECTED_PROVIDERS, "google"):
+        raise HTTPException(status_code=400, detail=f"Can't open a login tab for '{provider}'")
+    from app.services.jobs.apply import cdp
+
+    try:
+        return await cdp.open_login_tab(provider)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 # --------------------------------------------------------------------------- #
 # Crawl (SSE)                                                                  #
 # --------------------------------------------------------------------------- #
@@ -144,8 +203,18 @@ def _resume_text_for(body: CrawlRequest) -> str | None:
 async def crawl(body: CrawlRequest) -> StreamingResponse:
     resume_text = _resume_text_for(body)
 
+    years = body.target_years_experience
+    if years is None:
+        prof_years = load_profile().years_experience
+        m = "".join(c for c in (prof_years or "") if c.isdigit())
+        years = int(m) if m else None
+
     async def event_stream():
-        async for event in run_crawl(resume_text):
+        async for event in run_crawl(
+            resume_text,
+            posted_within_days=body.posted_within_days,
+            target_years_experience=years,
+        ):
             yield format_sse(event)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -164,6 +233,32 @@ async def get_profile() -> ApplicantProfile:
 @router.put("/profile", response_model=ApplicantProfile)
 async def put_profile(body: ApplicantProfile) -> ApplicantProfile:
     return save_profile(body)
+
+
+@router.post("/profile/from-resume", response_model=ApplicantProfile)
+async def autofill_profile_from_resume(body: AutofillProfileRequest) -> ApplicantProfile:
+    """Pull name / email / phone / links / location / years of experience out of
+    the uploaded resume and populate the profile, and attach the compiled PDF."""
+    session = session_store.get(body.resume_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Resume session not found")
+
+    from app.services.jobs.profile_extract import apply_extracted, extract_profile_fields
+
+    resume_text = latex_to_plain_text(session.latex)
+    fields = await extract_profile_fields(resume_text, raw_latex=session.latex)
+
+    profile = load_profile()
+    apply_extracted(profile, fields, overwrite=body.overwrite)
+
+    source_pdf = COMPILED_ROOT / body.resume_session_id / "resume.pdf"
+    if source_pdf.exists():
+        dest = RESUME_DIR / f"{body.resume_session_id}.pdf"
+        shutil.copyfile(source_pdf, dest)
+        profile.resume_pdf_path = str(dest)
+        profile.resume_source_label = f"resume session {body.resume_session_id[:8]}"
+
+    return save_profile(profile)
 
 
 @router.post("/profile/resume", response_model=ApplicantProfile)
@@ -212,12 +307,14 @@ async def list_jobs(
     location_contains: str | None = None,
     provider: Provider | None = None,
     remote_only: bool = False,
+    posted_within_days: int | None = Query(None, ge=1),
 ) -> list[RankedJob]:
     return crawl_store.ranked_jobs(
         min_score=min_score,
         location_contains=location_contains,
         provider=provider,
         remote_only=remote_only,
+        posted_within_days=posted_within_days,
     )
 
 
@@ -235,7 +332,8 @@ async def job_detail(job_id: str) -> RankedJob:
 
 
 def _run_view(run) -> ApplyRunView:
-    return run.to_view(screenshot_url=f"/api/jobs/apply/{run.run_id}/screenshot?v={int(run.updated_at.timestamp() * 1000)}")
+    v = int(run.updated_at.timestamp() * 1000)
+    return run.to_view(lambda step: f"/api/jobs/apply/{run.run_id}/screenshot?step={step}&v={v}")
 
 
 @router.post("/apply/prepare", response_model=ApplyRunView)
@@ -323,8 +421,11 @@ async def cancel_application(run_id: str) -> dict[str, str]:
 
 
 @router.get("/apply/{run_id}/screenshot")
-async def apply_screenshot(run_id: str) -> Response:
-    path = screenshot_path(run_id)
+async def apply_screenshot(run_id: str, step: int = 0) -> Response:
+    path = screenshot_path(run_id, step)
+    if not path.exists() and step == 0:
+        # first capture may have been recorded as step 0 or 1 depending on flow
+        path = screenshot_path(run_id, 1)
     if not path.exists():
-        raise HTTPException(status_code=404, detail="No screenshot for this run yet")
+        raise HTTPException(status_code=404, detail="No screenshot for this run/step yet")
     return Response(content=path.read_bytes(), media_type="image/png", headers={"Cache-Control": "no-store"})

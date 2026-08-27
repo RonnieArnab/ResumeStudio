@@ -16,6 +16,13 @@ export interface ConnectionStatus {
   since: string | null;
 }
 
+export interface CdpStatus {
+  available: boolean;
+  port: number;
+  launch_command: string;
+  browser?: string;
+}
+
 export type FieldKind =
   | "text"
   | "email"
@@ -24,6 +31,7 @@ export type FieldKind =
   | "number"
   | "textarea"
   | "select"
+  | "combobox"
   | "file"
   | "checkbox"
   | "radio"
@@ -110,6 +118,13 @@ export interface FormField {
   source: FieldSource;
 }
 
+export interface ApplyStep {
+  index: number;
+  title: string;
+  screenshot_url: string;
+  note: string;
+}
+
 export interface ApplyRunView {
   run_id: string;
   job_id: string;
@@ -118,6 +133,7 @@ export interface ApplyRunView {
   status: RunStatus;
   fields: FormField[];
   screenshot_url: string;
+  steps: ApplyStep[];
   captcha_detected: boolean;
   manual_only: boolean;
   notes: string[];
@@ -125,9 +141,43 @@ export interface ApplyRunView {
   created_at: string;
 }
 
+export type TrackerStatus =
+  | "interested"
+  | "preparing"
+  | "applied"
+  | "interviewing"
+  | "offer"
+  | "rejected"
+  | "withdrawn";
+
+export const TRACKER_STATUSES: TrackerStatus[] = [
+  "interested",
+  "preparing",
+  "applied",
+  "interviewing",
+  "offer",
+  "rejected",
+  "withdrawn",
+];
+
+export interface Application {
+  id: string;
+  job_id: string | null;
+  company: string;
+  title: string;
+  url: string;
+  provider: string;
+  source: string;
+  status: TrackerStatus;
+  notes: string;
+  applied_at: string;
+  updated_at: string;
+}
+
 export type CrawlEvent =
   | { type: "board_started"; provider: Provider; slug: string; label: string }
   | { type: "board_error"; slug: string; error: string }
   | { type: "jobs_found"; slug: string; count: number }
+  | { type: "filtered"; slug: string; dropped_old: number }
   | { type: "job_scored"; job_id: string; title: string; score: number | null; verdict?: string; skipped?: boolean; capped?: boolean }
   | { type: "done"; jobs: number; scored: number; message?: string };

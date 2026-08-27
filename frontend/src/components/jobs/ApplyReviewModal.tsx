@@ -11,6 +11,7 @@ import {
   Select,
   Stack,
   Table,
+  Tabs,
   Text,
   Textarea,
   TextInput,
@@ -32,6 +33,7 @@ const SOURCE_COLOR: Record<string, string> = {
 export default function ApplyReviewModal() {
   const run = useStore((s) => s.applyRun);
   const setApplyRun = useStore((s) => s.setApplyRun);
+  const bumpTracker = useStore((s) => s.bumpTracker);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -72,6 +74,7 @@ export default function ApplyReviewModal() {
     try {
       setApplyRun(await jobsApi.submitApply(run.run_id));
       setConfirming(false);
+      bumpTracker();
       notify.success("Application submitted");
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Submit failed");
@@ -88,9 +91,10 @@ export default function ApplyReviewModal() {
         </Group>
 
         {run.manual_only && (
-          <Alert color="blue" icon={<IconAlertTriangle size={16} />} title="Finish in the open browser">
-            A visible browser window is open with page 1 filled in. Review the values below, apply any edits, then
-            complete and submit the application in that window yourself.
+          <Alert color="blue" icon={<IconAlertTriangle size={16} />} title="Finish in the open Chrome window">
+            A visible Google Chrome window is open and has been driven through{" "}
+            {run.steps.length > 1 ? `${run.steps.length} steps` : "the first page"} of this application. Review the
+            captures below, then complete and submit it in that window yourself.
           </Alert>
         )}
 
@@ -118,9 +122,38 @@ export default function ApplyReviewModal() {
           </Alert>
         )}
 
-        <ScrollArea.Autosize mah={360} type="auto" style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 8 }}>
-          <Image src={run.screenshot_url} alt="Filled application form" />
-        </ScrollArea.Autosize>
+        {run.steps.length > 1 ? (
+          <Stack gap="xs">
+            <Text size="sm" fw={600}>
+              Walkthrough — {run.steps.length} steps captured
+            </Text>
+            <Tabs defaultValue="0" keepMounted={false}>
+              <Tabs.List>
+                {run.steps.map((s) => (
+                  <Tabs.Tab key={s.index} value={String(s.index)}>
+                    {s.index + 1}. {s.title}
+                  </Tabs.Tab>
+                ))}
+              </Tabs.List>
+              {run.steps.map((s) => (
+                <Tabs.Panel key={s.index} value={String(s.index)} pt="xs">
+                  {s.note && (
+                    <Text size="xs" c="dimmed" mb={6}>
+                      {s.note}
+                    </Text>
+                  )}
+                  <ScrollArea.Autosize mah={460} type="auto" style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 8 }}>
+                    <Image src={s.screenshot_url} alt={s.title} />
+                  </ScrollArea.Autosize>
+                </Tabs.Panel>
+              ))}
+            </Tabs>
+          </Stack>
+        ) : (
+          <ScrollArea.Autosize mah={360} type="auto" style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 8 }}>
+            <Image src={run.screenshot_url} alt="Filled application form" />
+          </ScrollArea.Autosize>
+        )}
 
         {!submitted && (
           <>

@@ -52,14 +52,23 @@ def keyword_overlap(resume_text: str, job: JobPosting) -> float:
     return len(resume_tokens & jd_tokens) / len(resume_tokens)
 
 
-async def score_job(resume_text: str, job: JobPosting) -> MatchResult:
+async def score_job(
+    resume_text: str, job: JobPosting, *, target_years_experience: int | None = None
+) -> MatchResult:
     settings = get_settings()
     if not settings.openai_api_key:
         return MatchResult(job_id=job.id, verdict="error", summary="OPENAI_API_KEY is not set", error="missing_api_key")
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
+    exp_line = (
+        f"TARGET SENIORITY: the candidate is looking for roles around {target_years_experience} years of "
+        f"experience — penalise the score if this role is clearly far above or below that level.\n"
+        if target_years_experience is not None
+        else ""
+    )
     user_prompt = (
         f"RESUME:\n{resume_text[:6000]}\n\n"
+        f"{exp_line}"
         f"JOB TITLE: {job.title}\n"
         f"COMPANY: {job.company}\n"
         f"LOCATION: {job.location or 'unspecified'}\n"

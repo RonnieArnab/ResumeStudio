@@ -1,7 +1,15 @@
 """Open an application form, fill it, screenshot it, and stop.
 
 Nothing here submits unless `submit()` is called — which only happens on an
-explicit user action in the dashboard, one job at a time."""
+explicit user action in the dashboard, one job at a time.
+
+Three shapes of apply flow:
+  - ATS boards (Greenhouse/Lever/Ashby): single embedded form, headless.
+  - LinkedIn / Wellfound: connected browser, fill Easy-Apply page 1, stop.
+  - Paste-any-URL ("other"): headful Google Chrome, click through "Apply",
+    handle an email pre-step, walk the multi-step wizard filling each page,
+    screenshot every step, stop before the final Submit.
+"""
 
 from __future__ import annotations
 
@@ -9,13 +17,20 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.services.jobs.apply.browser import close_run_browser, new_context, sweep_stale_runs
-from app.services.jobs.apply.connected import NeedsReconnect, close_connected_context, connected_context
+from app.services.jobs.apply.browser import (
+    acquire_visible_context,
+    close_run_browser,
+    new_context,
+    sweep_stale_runs,
+)
+from app.services.jobs.apply import cdp
+from app.services.jobs.apply.connected import NeedsReconnect, connected_context, is_connected
 from app.services.jobs.apply.field_extractor import extract_fields
 from app.services.jobs.apply.field_mapper import map_fields
 from app.services.jobs.crawl_store import crawl_store
 from app.services.jobs.models import CONNECTED_PROVIDERS, ApplicantProfile, ApplyRun, FormField, JobPosting
 from app.services.jobs.storage import screenshot_path
+from app.services.jobs.tracker import record_apply
 
 _CAPTCHA_SELECTORS = [
     "iframe[src*='recaptcha']",
@@ -26,20 +41,40 @@ _CAPTCHA_SELECTORS = [
     "iframe[title*='challenge']",
 ]
 
-_COOKIE_BUTTON_TEXTS = ["Accept all", "Accept cookies", "I agree", "Got it", "Allow all"]
+_COOKIE_TEXTS = [
+    "Accept all", "Accept All", "Accept cookies", "Accept Cookies", "Accept", "ACCEPT",
+    "I agree", "I Agree", "Agree", "Got it", "Allow all", "OK", "Continue",
+]
 
-_SUBMIT_TEXTS = ["submit application", "submit", "send application", "apply", "send"]
+_APPLY_TEXTS = ["apply now", "apply for this job", "apply to this job", "start your application", "apply"]
+_APPLY_EXCLUDE = ("linkedin", "indeed", "google", "with ", "seek", "view", "more jobs", "share", "save")
+
+_NEXT_TEXTS = ["save and continue", "save & continue", "continue", "next", "next step", "review"]
+
+_SUBMIT_TEXTS = ["submit application", "submit", "send application", "send"]
+
+_CONSENT_WORDS = (
+    "agree", "consent", "terms", "conditions", "acknowledge", "certify", "privacy",
+    "gdpr", "i have read", "truthful", "accurate and complete",
+)
+
+
+# --------------------------------------------------------------------------- #
+# Low-level helpers                                                            #
+# --------------------------------------------------------------------------- #
 
 
 async def _dismiss_cookie_banner(page) -> None:
-    for text in _COOKIE_BUTTON_TEXTS:
-        try:
-            button = page.get_by_role("button", name=text, exact=False)
-            if await button.count() > 0:
-                await button.first.click(timeout=2000)
-                return
-        except Exception:  # noqa: BLE001
-            continue
+    for text in _COOKIE_TEXTS:
+        for exact in (True, False):
+            try:
+                btn = page.get_by_role("button", name=text, exact=exact)
+                if await btn.count() > 0 and await btn.first.is_visible():
+                    await btn.first.click(timeout=2000)
+                    await page.wait_for_timeout(400)
+                    return
+            except Exception:  # noqa: BLE001
+                continue
 
 
 async def _detect_captcha(page) -> bool:
@@ -52,14 +87,15 @@ async def _detect_captcha(page) -> bool:
     return False
 
 
-async def _screenshot(page, run_id: str) -> None:
-    try:
-        await page.screenshot(path=str(screenshot_path(run_id)), full_page=True)
-    except Exception:  # noqa: BLE001 - a viewport shot is better than none
+async def _screenshot(page, run: ApplyRun, title: str, note: str = "") -> None:
+    step = len(run.step_meta)
+    for full in (True, False):
         try:
-            await page.screenshot(path=str(screenshot_path(run_id)))
+            await page.screenshot(path=str(screenshot_path(run.run_id, step)), full_page=full)
+            break
         except Exception:  # noqa: BLE001
-            pass
+            continue
+    run.step_meta.append((step, title, note))
 
 
 async def _fill_field(page, field: FormField, profile: ApplicantProfile, notes: list[str]) -> None:
@@ -79,6 +115,21 @@ async def _fill_field(page, field: FormField, profile: ApplicantProfile, notes: 
 
         if field.kind == "select":
             await page.select_option(field.selector, label=field.value)
+        elif field.kind == "combobox":
+            loc = page.locator(field.selector)
+            await loc.click(timeout=3000)
+            await loc.fill(field.value, timeout=3000)
+            await page.wait_for_timeout(700)
+            # pick the first matching option from the popup listbox
+            option = page.locator("[role=option], li[role=option], .oj-listbox-result").filter(has_text=field.value)
+            try:
+                if await option.count() > 0:
+                    await option.first.click(timeout=2000)
+                else:
+                    await page.keyboard.press("ArrowDown")
+                    await page.keyboard.press("Enter")
+            except Exception:  # noqa: BLE001
+                await page.keyboard.press("Enter")
         elif field.kind == "checkbox":
             if field.value.strip().lower() in {"true", "yes", "1", "on"}:
                 await page.check(field.selector, timeout=4000)
@@ -93,26 +144,96 @@ async def _fill_field(page, field: FormField, profile: ApplicantProfile, notes: 
         notes.append(f"Could not fill '{field.label}': {type(exc).__name__}")
 
 
-async def _fill_and_capture(page, job: JobPosting, profile: ApplicantProfile, resume_text: str, run: ApplyRun) -> None:
+async def _check_consent_boxes(page) -> int:
+    """Tick unchecked terms/consent/certification checkboxes — you can't apply
+    without agreeing, and the model won't reliably answer these."""
+    ticked = 0
+    try:
+        boxes = await page.locator("input[type=checkbox]:visible").all()
+    except Exception:  # noqa: BLE001
+        return 0
+    for cb in boxes:
+        try:
+            if await cb.is_checked():
+                continue
+            label = ""
+            for getter in ("aria-label",):
+                label = (await cb.get_attribute(getter)) or ""
+            if not label:
+                handle = await cb.element_handle()
+                if handle:
+                    label = await page.evaluate(
+                        "(el) => (el.labels && el.labels[0] && el.labels[0].innerText) || "
+                        "(el.closest('label') && el.closest('label').innerText) || "
+                        "(el.parentElement && el.parentElement.innerText) || ''",
+                        handle,
+                    )
+            if any(w in label.lower() for w in _CONSENT_WORDS):
+                await cb.check(timeout=2500)
+                ticked += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return ticked
+
+
+async def _fill_current_form(page, job: JobPosting, profile: ApplicantProfile, resume_text: str, run: ApplyRun) -> list[FormField]:
     fields = await extract_fields(page)
     if not fields:
-        await page.wait_for_timeout(2500)
+        await page.wait_for_timeout(3000)
         fields = await extract_fields(page)
-    if not fields:
-        run.notes.append("No form fields detected on the page — the application may open elsewhere.")
     fields = await map_fields(fields, job, profile, resume_text)
     for field in fields:
         await _fill_field(page, field, profile, run.notes)
-    run.fields = fields
-    run.captcha_detected = await _detect_captcha(page)
-    if run.captcha_detected:
-        run.notes.append("A CAPTCHA / bot check is present — this application must be submitted manually.")
+    await _check_consent_boxes(page)
     try:
-        await page.wait_for_load_state("networkidle", timeout=8000)
+        await page.wait_for_load_state("networkidle", timeout=6000)
     except Exception:  # noqa: BLE001
         pass
-    await page.wait_for_timeout(800)
-    await _screenshot(page, run.run_id)
+    await page.wait_for_timeout(700)
+    return fields
+
+
+async def _find_by_texts(page, texts: list[str], roles=("button", "link"), exclude: tuple[str, ...] = ()):
+    # exact matches first (so "Apply" beats "Apply with LinkedIn"), then loose.
+    for exact in (True, False):
+        for text in texts:
+            for role in roles:
+                try:
+                    loc = page.get_by_role(role, name=text, exact=exact)
+                    n = min(await loc.count(), 8)
+                    for i in range(n):
+                        cand = loc.nth(i)
+                        if not (await cand.is_visible() and await cand.is_enabled()):
+                            continue
+                        name = ((await cand.get_attribute("aria-label")) or (await cand.inner_text()) or "").lower()
+                        if any(x in name for x in exclude):
+                            continue
+                        return cand
+                except Exception:  # noqa: BLE001
+                    continue
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# prepare()                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+async def _close_open_manual_runs() -> None:
+    """Only one visible apply window/tab at a time — close any prior manual run
+    (its tab too, even for CDP, so the user's Chrome doesn't pile up tabs)."""
+    for other in crawl_store.all_runs():
+        if other.manual_only and other.context is not None:
+            page = getattr(other, "page", None)
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            other.manual_only = False  # let close_run_browser fully detach
+            await close_run_browser(other)
+            other.status = "cancelled"
+            crawl_store.drop_run(other.run_id)
 
 
 async def prepare(job: JobPosting, profile: ApplicantProfile, resume_text: str) -> ApplyRun:
@@ -121,24 +242,43 @@ async def prepare(job: JobPosting, profile: ApplicantProfile, resume_text: str) 
     crawl_store.put_run(run)
 
     if job.provider in CONNECTED_PROVIDERS:
-        return await _prepare_connected(job, profile, resume_text, run)
+        result = await _prepare_connected(job, profile, resume_text, run)
+    elif job.provider == "other":
+        result = await _prepare_multistep(job, profile, resume_text, run)
+    else:
+        result = await _prepare_ats(job, profile, resume_text, run)
 
+    if result.status == "ready_for_review":
+        try:
+            record_apply(job, status="preparing", source="apply")
+        except Exception:  # noqa: BLE001 - tracker must never break an apply
+            pass
+    return result
+
+
+async def _prepare_ats(job: JobPosting, profile: ApplicantProfile, resume_text: str, run: ApplyRun) -> ApplyRun:
     try:
         context = await new_context()
         page = await context.new_page()
         run.context = context
         run.page = page
 
-        target = job.apply_url or job.url
-        await page.goto(target, wait_until="domcontentloaded", timeout=45000)
+        await page.goto(job.apply_url or job.url, wait_until="domcontentloaded", timeout=45000)
         try:
             await page.wait_for_selector("form input, form textarea, input[type=file]", timeout=15000)
-        except Exception:  # noqa: BLE001 - fall through and try extraction anyway
+        except Exception:  # noqa: BLE001
             pass
         await page.wait_for_timeout(1500)
         await _dismiss_cookie_banner(page)
 
-        await _fill_and_capture(page, job, profile, resume_text, run)
+        fields = await _fill_current_form(page, job, profile, resume_text, run)
+        if not fields:
+            run.notes.append("No form fields detected — the application may open elsewhere.")
+        run.fields = fields
+        run.captcha_detected = await _detect_captcha(page)
+        if run.captcha_detected:
+            run.notes.append("A CAPTCHA / bot check is present — submit this one manually.")
+        await _screenshot(page, run, "Application form")
         run.status = "ready_for_review"
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
@@ -149,60 +289,247 @@ async def prepare(job: JobPosting, profile: ApplicantProfile, resume_text: str) 
     return run
 
 
-async def _prepare_connected(job: JobPosting, profile: ApplicantProfile, resume_text: str, run: ApplyRun) -> ApplyRun:
-    """LinkedIn / Wellfound: open the application in the user's *visible*
-    connected browser, fill what's on the first page, and stop. The window is
-    left open for the user to finish; this never submits."""
+async def _prepare_multistep(job: JobPosting, profile: ApplicantProfile, resume_text: str, run: ApplyRun) -> ApplyRun:
+    """Paste-any-URL: a visible Google Chrome window walks the whole apply flow."""
     run.manual_only = True
+    MAX_STEPS = 7
+    await _close_open_manual_runs()
     try:
-        context = await connected_context(job.provider, headless=False)
-        page = await context.new_page()
+        context, page, mode = await acquire_visible_context()
         run.context = context
         run.page = page
+        if mode == "cdp":
+            run.notes.append("Running in your open Chrome (attached over the DevTools protocol).")
 
-        await page.goto(job.url or job.apply_url, wait_until="domcontentloaded", timeout=45000)
+        await page.goto(job.url or job.apply_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(2500)
+        await _dismiss_cookie_banner(page)
+        await _identify_job(page, job)
+        await _screenshot(page, run, "Job posting", "Opened the link")
 
-        if "/login" in page.url or "/authwall" in page.url:
-            raise NeedsReconnect(f"Your {job.provider.title()} session expired — reconnect it")
+        # 1. Job preview pages just link to the form — click "Apply".
+        apply_btn = await _find_by_texts(page, _APPLY_TEXTS, exclude=_APPLY_EXCLUDE)
+        if apply_btn is not None:
+            await apply_btn.click(timeout=8000)
+            await _settle(page, 5000)
+            await _dismiss_cookie_banner(page)
+            run.notes.append("Clicked the Apply button.")
 
-        if job.provider == "linkedin":
-            clicked = False
-            for name in ("Easy Apply", "Apply"):
-                try:
-                    btn = page.get_by_role("button", name=name, exact=False)
-                    if await btn.count() > 0:
-                        await btn.first.click(timeout=5000)
-                        clicked = True
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
-            await page.wait_for_timeout(2000)
-            if not clicked:
-                run.notes.append("Couldn't find an Easy Apply button — this role may use an external application.")
-            run.notes.append("Easy Apply is multi-step: page 1 is filled below, finish the rest in the open browser window.")
+        # 2. Oracle-style email pre-step: email + agree checkbox + Next.
+        await _handle_email_prestep(page, profile, run)
 
-        await _fill_and_capture(page, job, profile, resume_text, run)
-        run.notes.append("The browser window is open — review and submit there yourself.")
+        # 3. Walk the wizard.
+        last_fingerprint = ""
+        stalls = 0
+        for step_num in range(1, MAX_STEPS + 1):
+            await _settle(page, 1500)
+            fields = await _fill_current_form(page, job, profile, resume_text, run)
+            run.fields = fields  # keep the latest step's fields for the review table
+            run.captcha_detected = run.captcha_detected or await _detect_captcha(page)
+
+            heading = await _page_heading(page)
+            step_captcha = await _detect_captcha(page)
+            run.captcha_detected = run.captcha_detected or step_captcha
+            note = f"{len(fields)} field(s) filled" + (" · CAPTCHA blocking this step" if step_captcha else "")
+            await _screenshot(page, run, heading or f"Step {step_num}", note)
+
+            if step_captcha:
+                run.notes.append(
+                    "A CAPTCHA is blocking this step — solve it in the open Chrome window, then continue the application there."
+                )
+                break
+
+            submit_btn = await _find_by_texts(page, _SUBMIT_TEXTS)
+            next_btn = await _find_by_texts(page, _NEXT_TEXTS)
+            if submit_btn is not None and next_btn is None:
+                run.notes.append(f"Reached the review / submit step ({heading or 'final step'}) — stopping for you to submit.")
+                break
+            if next_btn is None:
+                run.notes.append("No further step button found — finish the application in the open window.")
+                break
+
+            fp = f"{page.url}::{heading}::{len(fields)}::{'|'.join(f.label for f in fields[:3])}"
+            if fp == last_fingerprint:
+                stalls += 1
+                if stalls >= 2:
+                    run.notes.append("The form stopped advancing (a required field it couldn't fill) — continue in the window.")
+                    break
+            else:
+                stalls = 0
+            last_fingerprint = fp
+
+            try:
+                await next_btn.scroll_into_view_if_needed(timeout=2000)
+                await next_btn.click(timeout=8000)
+            except Exception:  # noqa: BLE001
+                run.notes.append("Couldn't click the next-step button — continue in the window.")
+                break
+            await _settle(page, 2000)
+        else:
+            run.notes.append(f"Stopped after {MAX_STEPS} steps — continue in the open window.")
+
+        if run.captcha_detected:
+            run.notes.append("A CAPTCHA appeared during the flow.")
+        run.notes.append("The Chrome window is open — review each step above, then submit there yourself.")
         run.status = "ready_for_review"
-    except NeedsReconnect as exc:
-        run.status = "failed"
-        run.notes.append(str(exc))
-        await _teardown_connected(run)
     except Exception as exc:  # noqa: BLE001
-        run.status = "failed"
-        run.notes.append(f"Failed to open the application: {exc}")
-        await _teardown_connected(run)
+        # If we already walked a step or two, that's still a useful result —
+        # don't blow the whole run away just because the page later died.
+        if len(run.step_meta) >= 2:
+            run.notes.append(f"Stopped early ({type(exc).__name__}) — continue in the open window.")
+            run.status = "ready_for_review"
+        else:
+            run.status = "failed"
+            run.notes.append(f"Multi-step apply failed: {exc}")
+            await _teardown(run)
 
     run.updated_at = datetime.now(timezone.utc)
     return run
 
 
-async def _teardown_connected(run: ApplyRun) -> None:
-    if run.context is not None:
-        await close_connected_context(run.context)
-    run.page = None
-    run.context = None
+async def _handle_email_prestep(page, profile: ApplicantProfile, run: ApplyRun) -> None:
+    try:
+        try:
+            await page.wait_for_selector("input[type=email], input[name*=email i]", timeout=8000)
+        except Exception:  # noqa: BLE001
+            return
+        email_input = page.locator("input[type=email], input[name*=email i], input[id*=email i]").first
+        if await email_input.count() == 0 or not await email_input.is_visible():
+            return
+        # only treat as a pre-step if the page is sparse (just email + agree + honeypot)
+        all_inputs = await page.locator("input:visible, textarea:visible, select:visible").count()
+        if all_inputs > 5:
+            return
+        if profile.email:
+            await email_input.fill(profile.email, timeout=4000)
+        await _check_consent_boxes(page)
+        for cb in await page.locator("input[type=checkbox]:visible").all():
+            try:
+                if not await cb.is_checked():
+                    await cb.check(timeout=1500)
+            except Exception:  # noqa: BLE001
+                pass
+        await _screenshot(page, run, "Enter email address", "Filled email + accepted terms")
+        nxt = await _find_by_texts(page, ["next", "continue", "get started"])
+        if nxt is not None:
+            await nxt.click(timeout=6000)
+            await _settle(page, 4000)
+            run.notes.append("Passed the email / terms pre-step.")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _identify_job(page, job: JobPosting) -> None:
+    """Pull the real role title / company off the posting page so the tracker
+    and review header show something meaningful for a pasted URL."""
+    if job.title and job.title != "Pasted job URL":
+        return
+    try:
+        heading = await _page_heading(page)
+        page_title = (await page.title()) or ""
+        og_site = await page.locator("meta[property='og:site_name']").first.get_attribute("content")
+    except Exception:  # noqa: BLE001
+        return
+    title = heading or page_title.split("|")[0].split(" - ")[0].strip()
+    if title and 3 < len(title) < 120:
+        job.title = title
+    if og_site:
+        job.company = og_site.strip()
+
+
+async def _settle(page, extra_ms: int) -> None:
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:  # noqa: BLE001
+        pass
+    await page.wait_for_timeout(extra_ms)
+
+
+async def _page_heading(page) -> str:
+    for sel in ("h1", "h2", "[role=heading]"):
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() > 0 and await loc.is_visible():
+                txt = (await loc.inner_text()).strip()
+                if txt:
+                    return txt[:80]
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
+
+
+async def _prepare_connected(job: JobPosting, profile: ApplicantProfile, resume_text: str, run: ApplyRun) -> ApplyRun:
+    """LinkedIn / Wellfound: open in the user's real Chrome (preferred, via CDP)
+    or a stored connected session, fill Easy-Apply page 1, and stop."""
+    run.manual_only = True
+    await _close_open_manual_runs()
+    provider_name = job.provider.title()
+    try:
+        if await cdp.is_available():
+            context, page, _ = await acquire_visible_context()
+            run.notes.append(f"Using your open Chrome — your {provider_name} login is used directly.")
+        elif is_connected(job.provider):
+            context = await connected_context(job.provider, headless=False)
+            page = await context.new_page()
+        else:
+            raise NeedsReconnect(
+                f"Connect your {provider_name} account, or open Chrome with remote debugging, then try again."
+            )
+        run.context = context
+        run.page = page
+
+        await page.goto(job.url or job.apply_url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(2500)
+        if "/login" in page.url or "/authwall" in page.url or "/signup" in page.url:
+            run.notes.append(
+                f"Not signed in to {provider_name} in this browser. Sign in in the tab that's now open "
+                f"(use “Continue with Google” if you're logged into Google), then re-run apply."
+            )
+            try:
+                await page.goto(f"https://www.{job.provider}.com/login", wait_until="domcontentloaded", timeout=20000)
+                await page.bring_to_front()
+            except Exception:  # noqa: BLE001
+                pass
+            await _screenshot(page, run, f"{provider_name} sign-in required")
+            run.status = "ready_for_review"
+            run.updated_at = datetime.now(timezone.utc)
+            return run
+
+        if job.provider == "linkedin":
+            btn = await _find_by_texts(page, ["easy apply", "apply"], roles=("button",))
+            if btn is not None:
+                await btn.click(timeout=5000)
+                await page.wait_for_timeout(2000)
+            else:
+                run.notes.append("No Easy Apply button — this role may use an external application.")
+            run.notes.append("Easy Apply is multi-step: page 1 is filled, finish the rest in the open window.")
+
+        fields = await _fill_current_form(page, job, profile, resume_text, run)
+        run.fields = fields
+        run.captcha_detected = await _detect_captcha(page)
+        await _screenshot(page, run, "Easy Apply — page 1")
+        run.notes.append("The browser window is open — review and submit there yourself.")
+        run.status = "ready_for_review"
+    except NeedsReconnect as exc:
+        run.status = "failed"
+        run.notes.append(str(exc))
+        await _teardown(run)
+    except Exception as exc:  # noqa: BLE001
+        run.status = "failed"
+        run.notes.append(f"Failed to open the application: {exc}")
+        await _teardown(run)
+
+    run.updated_at = datetime.now(timezone.utc)
+    return run
+
+
+async def _teardown(run: ApplyRun) -> None:
+    await close_run_browser(run)
+
+
+# --------------------------------------------------------------------------- #
+# refill() / submit()                                                          #
+# --------------------------------------------------------------------------- #
 
 
 async def refill(run: ApplyRun, overrides: dict[str, str]) -> ApplyRun:
@@ -221,33 +548,15 @@ async def refill(run: ApplyRun, overrides: dict[str, str]) -> ApplyRun:
         await _fill_field(run.page, field, run.profile, run.notes)
 
     await run.page.wait_for_timeout(300)
-    await _screenshot(run.page, run.run_id)
+    await _screenshot(run.page, run, "After your edits")
     run.status = "ready_for_review"
     run.updated_at = datetime.now(timezone.utc)
     return run
 
 
-async def _find_submit(page):
-    for text in _SUBMIT_TEXTS:
-        for role in ("button", "link"):
-            try:
-                locator = page.get_by_role(role, name=text, exact=False)
-                if await locator.count() > 0:
-                    return locator.last
-            except Exception:  # noqa: BLE001
-                continue
-    try:
-        fallback = page.locator("button[type=submit], input[type=submit]")
-        if await fallback.count() > 0:
-            return fallback.last
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
 async def submit(run: ApplyRun) -> ApplyRun:
     if run.manual_only:
-        run.notes.append("This application must be finished by you in the open browser window — it won't be submitted from here.")
+        run.notes.append("Finish this one in the open browser window — it won't be submitted from here.")
         return run
     if run.captcha_detected:
         run.notes.append("Refusing to submit: a CAPTCHA is present. Finish this one in the browser yourself.")
@@ -260,8 +569,8 @@ async def submit(run: ApplyRun) -> ApplyRun:
     run.status = "submitting"
     page = run.page
     try:
-        button = await _find_submit(page)
-        if button is None:
+        button = await _find_by_texts(page, _SUBMIT_TEXTS) or page.locator("button[type=submit], input[type=submit]").last
+        if button is None or await button.count() == 0:
             run.status = "ready_for_review"
             run.notes.append("Could not locate a submit button — submit manually in the browser.")
             return run
@@ -269,13 +578,17 @@ async def submit(run: ApplyRun) -> ApplyRun:
         await button.click(timeout=8000)
         try:
             await page.wait_for_load_state("networkidle", timeout=25000)
-        except Exception:  # noqa: BLE001 - SPA confirmations don't always settle
+        except Exception:  # noqa: BLE001
             await page.wait_for_timeout(3000)
 
         body_text = (await page.inner_text("body"))[:4000]
         run.confirmation_text = _extract_confirmation(body_text)
-        await _screenshot(page, run.run_id)
+        await _screenshot(page, run, "Submitted")
         run.status = "submitted"
+        try:
+            record_apply(run.job, status="applied", source="submit", notes=run.confirmation_text or "")
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
         run.notes.append(f"Submit failed: {exc}")

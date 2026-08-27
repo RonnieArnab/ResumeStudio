@@ -8,6 +8,7 @@ export interface JobsSlice {
   applyRun: ApplyRunView | null;
   crawlLog: string[];
   crawling: boolean;
+  trackerVersion: number;
 
   setSources: (sources: BoardSource[]) => void;
   setJobs: (jobs: RankedJob[]) => void;
@@ -16,6 +17,7 @@ export interface JobsSlice {
   setCrawlLog: (log: string[]) => void;
   appendCrawlLog: (line: string) => void;
   setCrawling: (crawling: boolean) => void;
+  bumpTracker: () => void;
 }
 
 export const createJobsSlice: StateCreator<JobsSlice> = (set) => ({
@@ -25,6 +27,7 @@ export const createJobsSlice: StateCreator<JobsSlice> = (set) => ({
   applyRun: null,
   crawlLog: [],
   crawling: false,
+  trackerVersion: 0,
 
   setSources: (sources) => set({ sources }),
   setJobs: (jobs) => set({ jobs }),
@@ -33,4 +36,5 @@ export const createJobsSlice: StateCreator<JobsSlice> = (set) => ({
   setCrawlLog: (crawlLog) => set({ crawlLog }),
   appendCrawlLog: (line) => set((state) => ({ crawlLog: [...state.crawlLog, line] })),
   setCrawling: (crawling) => set({ crawling }),
+  bumpTracker: () => set((state) => ({ trackerVersion: state.trackerVersion + 1 })),
 });

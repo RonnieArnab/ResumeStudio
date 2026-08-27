@@ -7,6 +7,7 @@ import { notify } from "../../lib/notify";
 export default function PasteUrlCard() {
   const session = useStore((s) => s.session);
   const setApplyRun = useStore((s) => s.setApplyRun);
+  const bumpTracker = useStore((s) => s.bumpTracker);
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -16,6 +17,7 @@ export default function PasteUrlCard() {
     try {
       setApplyRun(await jobsApi.prepareApplyUrl(url.trim(), undefined, session?.session_id ?? null));
       setUrl("");
+      bumpTracker();
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "Could not open that URL");
     } finally {

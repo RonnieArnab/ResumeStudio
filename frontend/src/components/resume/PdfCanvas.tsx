@@ -8,10 +8,12 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 interface PdfCanvasProps {
   url: string;
   scale?: number;
+  /** render every page (default: first page only) */
+  allPages?: boolean;
 }
 
-export default function PdfCanvas({ url, scale = 1.5 }: PdfCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+export default function PdfCanvas({ url, scale = 1.5, allPages = false }: PdfCanvasProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -20,15 +22,25 @@ export default function PdfCanvas({ url, scale = 1.5 }: PdfCanvasProps) {
       setError(null);
       try {
         const pdf = await pdfjsLib.getDocument(url).promise;
-        const page = await pdf.getPage(1);
-        const viewport = page.getViewport({ scale });
-        const canvas = canvasRef.current;
-        if (!canvas || cancelled) return;
-        const context = canvas.getContext("2d");
-        if (!context) return;
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvasContext: context, viewport }).promise;
+        const container = containerRef.current;
+        if (!container || cancelled) return;
+        container.innerHTML = "";
+        const total = allPages ? pdf.numPages : 1;
+        for (let p = 1; p <= total; p++) {
+          const page = await pdf.getPage(p);
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.style.maxWidth = "100%";
+          canvas.style.display = "block";
+          canvas.style.marginBottom = "12px";
+          canvas.style.boxShadow = "0 1px 4px rgba(0,0,0,0.15)";
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx || cancelled) return;
+          container.appendChild(canvas);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to render PDF");
       }
@@ -37,7 +49,7 @@ export default function PdfCanvas({ url, scale = 1.5 }: PdfCanvasProps) {
     return () => {
       cancelled = true;
     };
-  }, [url, scale]);
+  }, [url, scale, allPages]);
 
   if (error) {
     return (
@@ -46,5 +58,5 @@ export default function PdfCanvas({ url, scale = 1.5 }: PdfCanvasProps) {
       </Alert>
     );
   }
-  return <canvas ref={canvasRef} style={{ maxWidth: "100%", display: "block" }} />;
+  return <div ref={containerRef} />;
 }

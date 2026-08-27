@@ -2,13 +2,16 @@ import { apiClient } from "./client";
 import { streamSSE } from "./sse";
 import type {
   ApplicantProfile,
+  Application,
   ApplyRunView,
   BoardSource,
+  CdpStatus,
   ConnectionStatus,
   CrawlEvent,
   Provider,
   RankedJob,
   RegistryEntry,
+  TrackerStatus,
 } from "../types/jobs";
 
 export interface JobFilters {
@@ -16,6 +19,8 @@ export interface JobFilters {
   location_contains?: string;
   provider?: string;
   remote_only?: boolean;
+  posted_within_days?: number | null;
+  target_years_experience?: number | null;
 }
 
 export const jobsApi = {
@@ -34,6 +39,8 @@ export const jobsApi = {
     apiClient.get<RegistryEntry[]>(`/api/jobs/registry?q=${encodeURIComponent(q)}`),
 
   listConnections: () => apiClient.get<ConnectionStatus[]>("/api/jobs/connect"),
+
+  cdpStatus: () => apiClient.get<CdpStatus>("/api/jobs/cdp/status"),
 
   connectStart: (provider: Provider) =>
     apiClient.post<{ status: string }>(`/api/jobs/connect/${provider}/start`, undefined),
@@ -55,6 +62,7 @@ export const jobsApi = {
     if (filters.location_contains) params.set("location_contains", filters.location_contains);
     if (filters.provider) params.set("provider", filters.provider);
     if (filters.remote_only) params.set("remote_only", "true");
+    if (filters.posted_within_days) params.set("posted_within_days", String(filters.posted_within_days));
     const qs = params.toString();
     return apiClient.get<RankedJob[]>(`/api/jobs${qs ? `?${qs}` : ""}`);
   },
@@ -68,6 +76,15 @@ export const jobsApi = {
 
   setResumeFromSession: (resumeSessionId: string) =>
     apiClient.post<ApplicantProfile>("/api/jobs/profile/resume", { resume_session_id: resumeSessionId }),
+
+  autofillProfile: (resumeSessionId: string, overwrite = false) =>
+    apiClient.post<ApplicantProfile>("/api/jobs/profile/from-resume", {
+      resume_session_id: resumeSessionId,
+      overwrite,
+    }),
+
+  openLoginTab: (provider: string) =>
+    apiClient.post<{ opened: string }>(`/api/jobs/connect/${provider}/open-login`, undefined),
 
   uploadResume: (file: File) => {
     const form = new FormData();
@@ -96,4 +113,16 @@ export const jobsApi = {
 
   cancelApply: (runId: string) =>
     apiClient.post<{ status: string }>(`/api/jobs/apply/${runId}/cancel`, undefined),
+
+  // ---- applied-jobs tracker ------------------------------------------------
+  listApplications: () => apiClient.get<Application[]>("/api/jobs/applications"),
+
+  addApplication: (body: Partial<Application>) =>
+    apiClient.post<Application>("/api/jobs/applications", body),
+
+  updateApplication: (id: string, body: { status?: TrackerStatus; notes?: string; company?: string; title?: string }) =>
+    apiClient.patch<Application>(`/api/jobs/applications/${id}`, body),
+
+  deleteApplication: (id: string) =>
+    apiClient.del<{ removed: boolean }>(`/api/jobs/applications/${id}`),
 };

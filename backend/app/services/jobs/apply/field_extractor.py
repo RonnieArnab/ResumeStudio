@@ -24,6 +24,11 @@ _EXTRACT_JS = r"""
     if (style.display === 'none' || style.visibility === 'hidden') continue;
     if (rect.width === 0 && rect.height === 0 && type !== 'file') continue;
 
+    // Skip spam-trap / honeypot fields.
+    const hp = (el.name + ' ' + el.id + ' ' + el.className).toLowerCase();
+    if (hp.includes('honeypot') || hp.includes('captcha') || el.getAttribute('autocomplete') === 'nope') continue;
+    if (el.tabIndex === -1 && type === 'text' && !el.getAttribute('aria-label') && !el.labels?.length) continue;
+
     const id = 'aa' + (i++);
     el.setAttribute('data-autoapply-id', id);
 
@@ -41,9 +46,18 @@ _EXTRACT_JS = r"""
     }
     if (!label && el.name) label = el.name;
 
+    if (/honeypot|hpot|do ?not ?fill|leave.*blank/i.test(label)) continue;
+
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const isCombobox = role === 'combobox'
+      || el.getAttribute('aria-autocomplete') === 'list'
+      || el.getAttribute('aria-haspopup') === 'listbox'
+      || (el.getAttribute('aria-expanded') !== null && tag === 'input');
+
     let kind = type;
     if (tag === 'textarea') kind = 'textarea';
     else if (tag === 'select') kind = 'select';
+    else if (isCombobox && ['text','search',''].includes(type === tag ? '' : type)) kind = 'combobox';
     else if (!['text','email','tel','url','number','file','checkbox','radio'].includes(type)) kind = 'text';
 
     let options = [];
@@ -104,11 +118,12 @@ def _group(raw: list[dict]) -> list[FormField]:
             group.option_selectors[option_label] = item["selector"]
             continue
 
+        _KNOWN = {"text", "email", "tel", "url", "number", "textarea", "select", "combobox", "file", "checkbox"}
         fields.append(
             FormField(
                 selector=item["selector"],
                 label=item["label"] or item["name"] or item["kind"],
-                kind=kind if kind in {"text", "email", "tel", "url", "number", "textarea", "select", "file", "checkbox"} else "text",
+                kind=kind if kind in _KNOWN else "text",
                 options=item["options"],
                 required=item["required"],
                 value="" if kind == "file" else item["value"],

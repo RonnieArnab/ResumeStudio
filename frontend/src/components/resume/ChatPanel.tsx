@@ -6,8 +6,8 @@ import { listStagedDiffs } from "../../api/agentStream";
 import { getResume } from "../../api/resume";
 import { useStore } from "../../state/store";
 import { notify } from "../../lib/notify";
-import type { AgentEvent, StagedEditSummary } from "../../types/agent";
-import ActivityTimeline from "./ActivityTimeline";
+import type { AgentEvent } from "../../types/agent";
+import AgentActivity from "./AgentActivity";
 import DiffReview from "./DiffReview";
 import JobDescriptionField from "./JobDescriptionField";
 
@@ -21,17 +21,18 @@ export default function ChatPanel({ sessionId }: ChatPanelProps) {
   const addMessage = useStore((s) => s.addMessage);
   const jobDescription = useStore((s) => s.jobDescription);
   const setSession = useStore((s) => s.setSession);
+  const stagedEdits = useStore((s) => s.stagedEdits);
+  const setStagedEdits = useStore((s) => s.setStagedEdits);
 
   const [text, setText] = useState("");
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [running, setRunning] = useState(false);
-  const [stagedEdits, setStagedEdits] = useState<StagedEditSummary[]>([]);
   const viewport = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getChatHistory(sessionId).then(setMessages).catch(() => {});
     listStagedDiffs(sessionId).then(setStagedEdits).catch(() => {});
-  }, [sessionId, setMessages]);
+  }, [sessionId, setMessages, setStagedEdits]);
 
   useEffect(() => {
     viewport.current?.scrollTo({ top: viewport.current.scrollHeight, behavior: "smooth" });
@@ -96,11 +97,7 @@ export default function ChatPanel({ sessionId }: ChatPanelProps) {
             </Paper>
           ))}
 
-          {events.length > 0 && (
-            <Paper withBorder radius="md" p="sm">
-              <ActivityTimeline events={events} />
-            </Paper>
-          )}
+          {(events.length > 0 || running) && <AgentActivity events={events} running={running} />}
 
           {stagedEdits.length > 0 && <DiffReview sessionId={sessionId} diffs={stagedEdits} onChanged={() => void refresh()} />}
         </Stack>

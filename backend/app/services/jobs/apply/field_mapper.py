@@ -106,7 +106,7 @@ async def map_fields(
     unresolved = [
         f
         for f in fields
-        if f.source == "empty" and f.kind in {"text", "email", "tel", "url", "number", "textarea", "select", "radio"}
+        if f.source == "empty" and f.kind in {"text", "email", "tel", "url", "number", "textarea", "select", "combobox", "radio"}
     ]
     settings = get_settings()
     if not unresolved or not settings.openai_api_key:

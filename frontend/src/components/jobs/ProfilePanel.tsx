@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Button, Card, FileButton, Group, Progress, Select, SimpleGrid, Stack, Text, Textarea, TextInput, Title } from "@mantine/core";
+import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, FileButton, Group, Progress, Select, SimpleGrid, Stack, Text, Textarea, TextInput, Title } from "@mantine/core";
+import { IconSparkles } from "@tabler/icons-react";
 import { jobsApi } from "../../api/jobs";
 import { useStore } from "../../state/store";
 import { notify } from "../../lib/notify";
@@ -26,10 +27,37 @@ export default function ProfilePanel() {
   const session = useStore((s) => s.session);
   const [profile, setProfile] = useState<ApplicantProfile | null>(null);
   const [saving, setSaving] = useState(false);
+  const [autofilling, setAutofilling] = useState(false);
+  const autoTried = useRef(false);
+
+  const autofill = async (overwrite: boolean, silent = false) => {
+    if (!session) return;
+    setAutofilling(true);
+    try {
+      const p = await jobsApi.autofillProfile(session.session_id, overwrite);
+      setProfile(p);
+      if (!silent) notify.success("Filled in what we could read from your resume");
+    } catch (err) {
+      if (!silent) notify.error(err instanceof Error ? err.message : "Auto-fill failed");
+    } finally {
+      setAutofilling(false);
+    }
+  };
 
   useEffect(() => {
-    jobsApi.getProfile().then(setProfile).catch(() => notify.error("Could not load profile"));
-  }, []);
+    jobsApi
+      .getProfile()
+      .then((p) => {
+        setProfile(p);
+        // first time: if a resume is open and the profile is basically empty, auto-fill quietly
+        if (!autoTried.current && session && !p.full_name && !p.email) {
+          autoTried.current = true;
+          void autofill(false, true);
+        }
+      })
+      .catch(() => notify.error("Could not load profile"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.session_id]);
 
   if (!profile) return <Text c="dimmed">Loading profile…</Text>;
 
@@ -72,12 +100,31 @@ export default function ProfilePanel() {
 
   return (
     <Stack gap="lg" maw={720}>
-      <div>
-        <Title order={4}>Applicant profile</Title>
-        <Text size="sm" c="dimmed">
-          Used to auto-fill application forms. Stored on the backend only.
-        </Text>
-      </div>
+      <Group justify="space-between" align="flex-start">
+        <div>
+          <Title order={4}>Applicant profile</Title>
+          <Text size="sm" c="dimmed">
+            Used to auto-fill application forms. Stored on the backend only.
+          </Text>
+        </div>
+        {session && (
+          <Button
+            size="xs"
+            variant="light"
+            leftSection={<IconSparkles size={14} />}
+            loading={autofilling}
+            onClick={() => autofill(true)}
+          >
+            Fill from résumé
+          </Button>
+        )}
+      </Group>
+
+      {!session && (
+        <Alert variant="light" color="blue" p="xs">
+          <Text size="xs">Open a resume in the Resume tab and this fills itself in from it.</Text>
+        </Alert>
+      )}
 
       <Card withBorder padding="sm" radius="md">
         <Group justify="space-between" mb={4}>

@@ -52,16 +52,43 @@ async def _fetch_jd(job_id: str, client: httpx.AsyncClient) -> str:
         return ""
 
 
-async def fetch_search(query: str, location: str, id_prefix: str, client: httpx.AsyncClient) -> list[JobPosting]:
+def _tpr_param(posted_within_days: int | None) -> str | None:
+    """LinkedIn's f_TPR ("time posted range") filter, in seconds."""
+    if not posted_within_days:
+        return None
+    if posted_within_days <= 1:
+        return "r86400"
+    if posted_within_days <= 3:
+        return "r259200"
+    if posted_within_days <= 7:
+        return "r604800"
+    return "r2592000"
+
+
+async def fetch_search(
+    query: str,
+    location: str,
+    id_prefix: str,
+    client: httpx.AsyncClient,
+    *,
+    posted_within_days: int | None = None,
+    experience_levels: list[str] | None = None,
+) -> list[JobPosting]:
     postings: list[JobPosting] = []
     seen: set[str] = set()
     jd_fetched = 0
+
+    base_params: dict[str, str] = {"keywords": query, "location": location or ""}
+    if tpr := _tpr_param(posted_within_days):
+        base_params["f_TPR"] = tpr
+    if experience_levels:
+        base_params["f_E"] = ",".join(experience_levels)
 
     for page in range(_MAX_PAGES):
         try:
             resp = await client.get(
                 _SEARCH_URL,
-                params={"keywords": query, "location": location or "", "start": page * _PER_PAGE},
+                params={**base_params, "start": str(page * _PER_PAGE)},
                 headers={"User-Agent": _UA},
             )
         except httpx.HTTPError:

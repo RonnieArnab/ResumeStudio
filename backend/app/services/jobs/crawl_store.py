@@ -99,7 +99,31 @@ class CrawlStore:
         location_contains: str | None = None,
         provider: Provider | None = None,
         remote_only: bool = False,
+        posted_within_days: int | None = None,
     ) -> list[RankedJob]:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=posted_within_days) if posted_within_days else None
+
+        def age_days(job) -> float | None:
+            if job.posted_at is None:
+                return None
+            posted = job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=timezone.utc)
+            return (now - posted).total_seconds() / 86400
+
+        def recency_boost(job) -> int:
+            d = age_days(job)
+            if d is None:
+                return 0
+            if d <= 1:
+                return 10
+            if d <= 3:
+                return 6
+            if d <= 7:
+                return 3
+            return 0
+
         rows: list[RankedJob] = []
         for job in self._jobs.values():
             if provider and job.provider != provider:
@@ -108,12 +132,22 @@ class CrawlStore:
                 continue
             if location_contains and location_contains.lower() not in job.location.lower():
                 continue
+            d = age_days(job)
+            if cutoff is not None and d is not None and job.posted_at and job.posted_at.replace(tzinfo=job.posted_at.tzinfo or timezone.utc) < cutoff:
+                continue
             match = self._matches.get(job.id)
             if match and match.score < min_score:
                 continue
             rows.append(RankedJob(job=job, match=match))
 
-        rows.sort(key=lambda r: (r.match.score if r.match else -1), reverse=True)
+        # rank by score, then a freshness boost, then raw recency
+        rows.sort(
+            key=lambda r: (
+                (r.match.score if r.match else -1) + recency_boost(r.job),
+                -(age_days(r.job) if age_days(r.job) is not None else 9999),
+            ),
+            reverse=True,
+        )
         return rows
 
     # ---- apply runs ---------------------------------------------------- #

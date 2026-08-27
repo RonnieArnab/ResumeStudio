@@ -30,6 +30,15 @@ _pending: dict[str, tuple] = {}
 _lock = asyncio.Lock()
 
 
+async def _launch_chrome(pw, *, headless: bool):
+    """Use the system Google Chrome install so the user sees a familiar window
+    with their extensions/profile chrome; fall back to bundled Chromium."""
+    try:
+        return await pw.chromium.launch(channel="chrome", headless=headless)
+    except Exception:  # noqa: BLE001
+        return await pw.chromium.launch(headless=headless)
+
+
 def session_path(provider: str):
     return SESSIONS_DIR / f"{provider}.json"
 
@@ -59,7 +68,7 @@ async def start_connect(provider: str) -> None:
         from playwright.async_api import async_playwright
 
         pw = await async_playwright().start()
-        browser = await pw.chromium.launch(headless=False)
+        browser = await _launch_chrome(pw, headless=False)
         context = await browser.new_context()
         page = await context.new_page()
         await page.goto(LOGIN_URLS[provider], wait_until="domcontentloaded")
@@ -102,7 +111,7 @@ async def connected_context(provider: str, headless: bool = False):
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(headless=headless)
+    browser = await _launch_chrome(pw, headless=headless)
     context = await browser.new_context(storage_state=str(session_path(provider)))
     # Attach the playwright handle so the caller can stop it after closing.
     context.on("close", lambda: None)

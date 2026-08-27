@@ -70,9 +70,38 @@ async def fetch_postings(provider: Provider, slug: str, client: httpx.AsyncClien
     return await PROVIDERS[provider](slug, client)
 
 
+def experience_levels_for_years(years: int | None) -> list[str]:
+    """Map a years-of-experience target to LinkedIn f_E levels (1..6)."""
+    if years is None:
+        return []
+    if years < 1:
+        return ["1", "2"]  # internship, entry
+    if years < 3:
+        return ["2", "3"]  # entry, associate
+    if years < 6:
+        return ["3", "4"]  # associate, mid-senior
+    if years < 10:
+        return ["4", "5"]  # mid-senior, director
+    return ["5", "6"]
+
+
 async def fetch_search(
-    provider: Provider, query: str, location: str, id_prefix: str, client: httpx.AsyncClient
+    provider: Provider,
+    query: str,
+    location: str,
+    id_prefix: str,
+    client: httpx.AsyncClient,
+    *,
+    posted_within_days: int | None = None,
+    target_years_experience: int | None = None,
 ) -> list[JobPosting]:
     if provider == "linkedin":
-        return await linkedin.fetch_search(query, location, id_prefix, client)
+        return await linkedin.fetch_search(
+            query,
+            location,
+            id_prefix,
+            client,
+            posted_within_days=posted_within_days,
+            experience_levels=experience_levels_for_years(target_years_experience),
+        )
     raise ValueError(f"{provider} search is not available over HTTP (needs a connected browser)")
