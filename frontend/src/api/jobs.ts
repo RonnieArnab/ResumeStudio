@@ -98,6 +98,9 @@ export const jobsApi = {
       resume_session_id: resumeSessionId ?? null,
     }),
 
+  openExternal: (jobId: string) =>
+    apiClient.post<{ url: string }>("/api/jobs/apply/open-external", { job_id: jobId }),
+
   prepareApplyUrl: (url: string, title?: string, resumeSessionId?: string | null) =>
     apiClient.post<ApplyRunView>("/api/jobs/apply/prepare-url", {
       url,

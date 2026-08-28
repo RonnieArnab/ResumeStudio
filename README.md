@@ -96,13 +96,13 @@ take over at any point, and it never closes your browser. Port overridable via
 
 ### Connected accounts (fallback)
 
-When CDP is connected, **Connections** shows **Google / LinkedIn / Wellfound** buttons that
-open that site's sign-in as a new tab in your running Chrome — sign into Google once and
-the "Continue with Google" flow on LinkedIn/Wellfound is one click.
+You run the app in your normal Chrome, so applying to a **LinkedIn or Wellfound** job just
+does `window.open(job_url)` — the posting opens in a new tab where you're already signed in,
+and you click Easy Apply there. The job drawer shows your profile details (name, email,
+phone, links) with copy buttons for filling the form, and the job is logged to the tracker.
 
-If you'd rather not run Chrome yourself: under **Connections**, click **Connect** — a
-visible Google Chrome window opens, you log in, then click **I've logged in** to save the
-session locally.
+**Advanced** (Connections → "drive a separate Chrome"): only for the paste-a-URL step-by-step
+fill flow — launch a debug Chrome with the printed command so the backend can attach over CDP.
 
 ## Editing the resume
 

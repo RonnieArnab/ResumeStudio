@@ -1,196 +1,86 @@
 import { useEffect, useState } from "react";
-import { ActionIcon, Alert, Badge, Button, Code, CopyButton, Divider, Group, Stack, Text, Tooltip } from "@mantine/core";
-import { IconBrandLinkedin, IconCheck, IconCopy, IconInfoCircle, IconRefresh } from "@tabler/icons-react";
+import { ActionIcon, Badge, Button, Code, CopyButton, Group, Spoiler, Stack, Text } from "@mantine/core";
+import { IconBrandLinkedin, IconCheck, IconCopy, IconExternalLink, IconRefresh } from "@tabler/icons-react";
 import { jobsApi } from "../../api/jobs";
-import { notify } from "../../lib/notify";
-import type { CdpStatus, ConnectionStatus, Provider } from "../../types/jobs";
+import type { CdpStatus } from "../../types/jobs";
 
-const LABELS: Record<string, string> = { linkedin: "LinkedIn", wellfound: "Wellfound" };
+const OPEN: Record<string, string> = {
+  LinkedIn: "https://www.linkedin.com/jobs/",
+  Wellfound: "https://wellfound.com/jobs",
+};
 
 export default function ConnectionsPanel() {
-  const [conns, setConns] = useState<ConnectionStatus[]>([]);
   const [cdp, setCdp] = useState<CdpStatus | null>(null);
-  const [pending, setPending] = useState<Provider | null>(null);
-  const [busy, setBusy] = useState<Provider | null>(null);
   const [checking, setChecking] = useState(false);
 
-  const refresh = () => jobsApi.listConnections().then(setConns).catch(() => {});
   const refreshCdp = () => {
     setChecking(true);
-    jobsApi
-      .cdpStatus()
-      .then(setCdp)
-      .catch(() => {})
-      .finally(() => setChecking(false));
+    jobsApi.cdpStatus().then(setCdp).catch(() => {}).finally(() => setChecking(false));
   };
-
-  useEffect(() => {
-    refresh();
-    refreshCdp();
-  }, []);
-
-  const start = async (p: Provider) => {
-    setBusy(p);
-    try {
-      await jobsApi.connectStart(p);
-      setPending(p);
-      notify.info("A browser window opened — log in there, then click 'I've logged in'.");
-    } catch (err) {
-      notify.error(err instanceof Error ? err.message : "Could not open a browser (local run only)");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const finish = async (p: Provider) => {
-    setBusy(p);
-    try {
-      await jobsApi.connectFinish(p);
-      setPending(null);
-      notify.success(`${LABELS[p]} connected`);
-      refresh();
-    } catch (err) {
-      notify.error(err instanceof Error ? err.message : "Finish failed");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const disconnect = async (p: Provider) => {
-    await jobsApi.connectDelete(p).catch(() => {});
-    refresh();
-  };
-
-  const openLogin = async (p: string) => {
-    try {
-      await jobsApi.openLoginTab(p);
-      notify.info(`Opened ${LABELS[p] ?? p} sign-in in a new tab of your Chrome — finish it there.`);
-    } catch (err) {
-      notify.error(err instanceof Error ? err.message : "Could not open a tab");
-    }
-  };
+  useEffect(refreshCdp, []);
 
   return (
-    <Stack gap="md">
-      {/* --- Preferred: attach to the user's own running Chrome over CDP --- */}
-      <Stack gap="xs">
-        <Group justify="space-between">
-          <Text size="sm" fw={600}>
-            Use your own Chrome
-          </Text>
-          <Group gap={6}>
-            {cdp?.available ? (
-              <Badge size="sm" color="teal" variant="light" leftSection={<IconCheck size={11} />}>
-                detected on :{cdp.port}
-              </Badge>
-            ) : (
-              <Badge size="sm" color="gray" variant="light">
-                not detected
-              </Badge>
-            )}
-            <Tooltip label="Re-check">
-              <ActionIcon size="sm" variant="subtle" loading={checking} onClick={refreshCdp}>
-                <IconRefresh size={14} />
-              </ActionIcon>
-            </Tooltip>
-          </Group>
-        </Group>
+    <Stack gap="sm">
+      <Text size="xs" c="dimmed">
+        Applying to a LinkedIn or Wellfound job opens the posting in a <b>new tab of this browser</b> — you're already
+        signed in, so just click Easy Apply there. Your profile details show up next to the job for copy-paste.
+      </Text>
 
-        <Text size="xs" c="dimmed">
-          Quit all Chrome windows, then run this once. Apply flows then run in your real Chrome — you watch and take over
-          in a normal tab.
-        </Text>
+      <Group gap={6}>
+        <IconBrandLinkedin size={15} />
+        {Object.entries(OPEN).map(([label, url]) => (
+          <Button
+            key={label}
+            size="compact-xs"
+            variant="light"
+            rightSection={<IconExternalLink size={12} />}
+            onClick={() => window.open(url, "_blank", "noopener")}
+          >
+            {label}
+          </Button>
+        ))}
+      </Group>
 
-        <Group gap={4} wrap="nowrap" align="flex-start">
-          <Code block style={{ flex: 1, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-            {cdp?.launch_command ?? "…"}
-          </Code>
-          {cdp?.launch_command && (
-            <CopyButton value={cdp.launch_command}>
-              {({ copied, copy }) => (
-                <Tooltip label={copied ? "Copied" : "Copy"}>
-                  <ActionIcon variant="light" onClick={copy}>
-                    {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-                  </ActionIcon>
-                </Tooltip>
+      <Spoiler maxHeight={0} showLabel="Advanced: drive a separate Chrome" hideLabel="Hide advanced" fz="xs">
+        <Stack gap="xs" mt="xs">
+          <Group justify="space-between">
+            <Text size="xs" fw={600}>
+              Attach to a debug Chrome (for the auto-fill walkthrough)
+            </Text>
+            <Group gap={4}>
+              {cdp?.available ? (
+                <Badge size="xs" color="teal" variant="light">
+                  on :{cdp.port}
+                </Badge>
+              ) : (
+                <Badge size="xs" color="gray" variant="light">
+                  off
+                </Badge>
               )}
-            </CopyButton>
-          )}
-        </Group>
-
-        {cdp?.available ? (
-          <>
-            <Text size="xs" c="dimmed">
-              Attached to {cdp.browser}. Sign in once in that window — open the pages in a new tab:
-            </Text>
-            <Group gap={6}>
-              <Button size="compact-xs" variant="light" onClick={() => openLogin("google")}>
-                Google
-              </Button>
-              <Button size="compact-xs" variant="light" onClick={() => openLogin("linkedin")}>
-                LinkedIn
-              </Button>
-              <Button size="compact-xs" variant="light" onClick={() => openLogin("wellfound")}>
-                Wellfound
-              </Button>
+              <ActionIcon size="sm" variant="subtle" loading={checking} onClick={refreshCdp}>
+                <IconRefresh size={13} />
+              </ActionIcon>
             </Group>
-            <Text size="xs" c="dimmed">
-              Once you're signed into Google, LinkedIn/Wellfound "Continue with Google" is one click and the session sticks.
-            </Text>
-          </>
-        ) : (
+          </Group>
           <Text size="xs" c="dimmed">
-            Not detected yet — run the command above, then hit re-check.
+            Only needed if you want the paste-a-URL flow to fill forms step-by-step in a visible window. Quit Chrome, run:
           </Text>
-        )}
-      </Stack>
-
-      <Divider label="or save a login session" labelPosition="center" />
-
-      <Alert variant="light" color="gray" icon={<IconInfoCircle size={15} />} p="xs">
-        <Text size="xs">
-          If you don't want to run Chrome yourself: log in once in a browser we open, and the session is saved locally and
-          reused. Nothing is auto-submitted. Local runs only.
-        </Text>
-      </Alert>
-
-      {conns.map((c) => (
-        <Group key={c.provider} justify="space-between" wrap="nowrap">
-          <Group gap={6}>
-            <IconBrandLinkedin size={16} />
-            <Text size="sm">{LABELS[c.provider] ?? c.provider}</Text>
-            {c.connected ? (
-              <Badge size="xs" color="teal" variant="light">
-                connected
-              </Badge>
-            ) : cdp?.available ? (
-              <Badge size="xs" color="teal" variant="light">
-                via your Chrome
-              </Badge>
-            ) : (
-              <Badge size="xs" color="gray" variant="light">
-                not connected
-              </Badge>
+          <Group gap={4} wrap="nowrap" align="flex-start">
+            <Code block style={{ flex: 1, fontSize: 10.5, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+              {cdp?.launch_command ?? "…"}
+            </Code>
+            {cdp?.launch_command && (
+              <CopyButton value={cdp.launch_command}>
+                {({ copied, copy }) => (
+                  <ActionIcon variant="light" onClick={copy}>
+                    {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
+                  </ActionIcon>
+                )}
+              </CopyButton>
             )}
           </Group>
-          <Group gap="xs">
-            {pending === c.provider ? (
-              <Button size="compact-xs" loading={busy === c.provider} onClick={() => finish(c.provider)}>
-                I've logged in
-              </Button>
-            ) : (
-              <Button size="compact-xs" variant="light" loading={busy === c.provider} onClick={() => start(c.provider)}>
-                {c.connected ? "Reconnect" : "Connect"}
-              </Button>
-            )}
-            {c.connected && (
-              <Button size="compact-xs" variant="subtle" color="red" onClick={() => disconnect(c.provider)}>
-                Disconnect
-              </Button>
-            )}
-          </Group>
-        </Group>
-      ))}
+        </Stack>
+      </Spoiler>
     </Stack>
   );
 }

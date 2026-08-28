@@ -1,11 +1,50 @@
 import { useEffect, useState } from "react";
-import { Anchor, Badge, Button, Drawer, Group, List, ScrollArea, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconCheck, IconExternalLink, IconX } from "@tabler/icons-react";
+import { Anchor, Badge, Button, CopyButton, Drawer, Group, List, Paper, ScrollArea, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { IconCheck, IconCopy, IconExternalLink, IconX } from "@tabler/icons-react";
 import { jobsApi } from "../../api/jobs";
 import { useStore } from "../../state/store";
 import { notify } from "../../lib/notify";
-import type { RankedJob } from "../../types/jobs";
+import type { ApplicantProfile, RankedJob } from "../../types/jobs";
 import { scoreColor } from "./scoreColor";
+
+function ProfileCheatSheet() {
+  const [p, setP] = useState<ApplicantProfile | null>(null);
+  useEffect(() => {
+    jobsApi.getProfile().then(setP).catch(() => {});
+  }, []);
+  if (!p) return null;
+  const rows: [string, string][] = [
+    ["Name", p.full_name],
+    ["Email", p.email],
+    ["Phone", p.phone],
+    ["Location", p.location],
+    ["LinkedIn", p.linkedin_url],
+    ["GitHub", p.github_url],
+  ].filter(([, v]) => v) as [string, string][];
+  return (
+    <Paper withBorder radius="sm" p="xs">
+      <Stack gap={4}>
+        {rows.map(([k, v]) => (
+          <Group key={k} gap={6} wrap="nowrap" justify="space-between">
+            <Text size="xs" c="dimmed" w={64}>
+              {k}
+            </Text>
+            <Text size="xs" style={{ flex: 1 }} truncate>
+              {v}
+            </Text>
+            <CopyButton value={v}>
+              {({ copied, copy }) => (
+                <Button size="compact-xs" variant="subtle" onClick={copy} leftSection={copied ? <IconCheck size={11} /> : <IconCopy size={11} />}>
+                  {copied ? "" : "copy"}
+                </Button>
+              )}
+            </CopyButton>
+          </Group>
+        ))}
+      </Stack>
+    </Paper>
+  );
+}
 
 export default function JobDetailDrawer() {
   const jobId = useStore((s) => s.selectedJobId);
@@ -18,24 +57,32 @@ export default function JobDetailDrawer() {
   const [preparing, setPreparing] = useState(false);
 
   useEffect(() => {
-    if (!jobId) {
-      setRow(null);
-      return;
-    }
+    if (!jobId) return; // keep the last content visible while the drawer animates closed
     setRow(null);
     jobsApi.getJob(jobId).then(setRow).catch(() => notify.error("Could not load job"));
   }, [jobId]);
+
+  const externalProvider = row?.job.provider === "linkedin" || row?.job.provider === "wellfound";
 
   const prepare = async () => {
     if (!jobId) return;
     setPreparing(true);
     try {
+      if (externalProvider) {
+        // Open the posting in a new tab of the user's own browser — they're
+        // already signed in there, so they just click Easy Apply.
+        const { url } = await jobsApi.openExternal(jobId);
+        window.open(url || row?.job.url, "_blank", "noopener");
+        bumpTracker();
+        selectJob(null);
+        return;
+      }
       const apply = await jobsApi.prepareApply(jobId, session?.session_id ?? null);
       setApplyRun(apply);
       bumpTracker();
       selectJob(null);
     } catch (err) {
-      notify.error(err instanceof Error ? err.message : "Prepare failed");
+      notify.error(err instanceof Error ? err.message : "Could not open the application");
     } finally {
       setPreparing(false);
     }
@@ -90,20 +137,29 @@ export default function JobDetailDrawer() {
           )}
 
           <Group>
-            <Button onClick={prepare} loading={preparing}>
-              Prepare application
+            <Button
+              onClick={prepare}
+              loading={preparing}
+              rightSection={externalProvider ? <IconExternalLink size={14} /> : undefined}
+            >
+              {externalProvider ? `Apply on ${row.job.provider === "linkedin" ? "LinkedIn" : "Wellfound"}` : "Prepare application"}
             </Button>
-            <Anchor href={row.job.url || row.job.apply_url} target="_blank" rel="noreferrer">
-              <Group gap={4}>
-                Open posting <IconExternalLink size={14} />
-              </Group>
-            </Anchor>
+            {!externalProvider && (
+              <Anchor href={row.job.url || row.job.apply_url} target="_blank" rel="noreferrer">
+                <Group gap={4}>
+                  Open posting <IconExternalLink size={14} />
+                </Group>
+              </Anchor>
+            )}
           </Group>
 
           <Text size="xs" c="dimmed">
-            Prepare opens the form in a headless browser, fills every field it can, and stops for your review. Nothing is
-            submitted until you confirm.
+            {externalProvider
+              ? "Opens the posting in a new tab of this browser — you're already signed in, so just click Easy Apply there. Your details from the profile:"
+              : "Prepare opens the form in a browser, fills every field it can, and stops for your review. Nothing is submitted until you confirm."}
           </Text>
+
+          {externalProvider && <ProfileCheatSheet />}
 
           <div>
             <Title order={5} mb={4}>

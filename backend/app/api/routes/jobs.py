@@ -336,6 +336,22 @@ def _run_view(run) -> ApplyRunView:
     return run.to_view(lambda step: f"/api/jobs/apply/{run.run_id}/screenshot?step={step}&v={v}")
 
 
+@router.post("/apply/open-external")
+async def open_external(body: PrepareApplyRequest) -> dict:
+    """The user opens the posting in a tab of their own browser (where they're
+    already signed in) and applies there. We just log it to the tracker."""
+    job: JobPosting | None = crawl_store.get_job(body.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found — run a crawl first")
+    try:
+        from app.services.jobs.tracker import record_apply
+
+        record_apply(job, status="preparing", source="external")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"url": job.url or job.apply_url}
+
+
 @router.post("/apply/prepare", response_model=ApplyRunView)
 async def prepare_application(body: PrepareApplyRequest) -> ApplyRunView:
     job: JobPosting | None = crawl_store.get_job(body.job_id)
