@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { ActionIcon, Paper, ScrollArea, SegmentedControl, Group, Stack, Text, Tooltip } from "@mantine/core";
+import { ActionIcon, Box, Paper, ScrollArea, SegmentedControl, Group, Text, Tooltip } from "@mantine/core";
 import { IconDownload } from "@tabler/icons-react";
 import { useStore } from "../../state/store";
 import { addResumeSection, deleteResumeSection } from "../../api/resume";
 import { notify } from "../../lib/notify";
-import PdfCanvas from "./PdfCanvas";
+import LatexEditor from "./LatexEditor";
 import ResumeDocument from "./ResumeDocument";
 
 export default function ResumePreview() {
@@ -12,7 +12,7 @@ export default function ResumePreview() {
   const setSession = useStore((s) => s.setSession);
   const stagedEdits = useStore((s) => s.stagedEdits);
   const selectSection = useStore((s) => s.selectSection);
-  const [mode, setMode] = useState<"formatted" | "pdf">("formatted");
+  const [mode, setMode] = useState<"formatted" | "latex">("formatted");
 
   const pendingIds = useMemo(() => new Set(stagedEdits.map((e) => e.section_id)), [stagedEdits]);
   if (!session) return null;
@@ -39,7 +39,7 @@ export default function ResumePreview() {
     <Paper withBorder radius="md" h="100%" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <Group justify="space-between" p="xs" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
         <Text fw={600} size="xs" c="dimmed">
-          Click a section to edit it with the agent
+          {mode === "formatted" ? "Click a section to edit it with the agent" : "Edit the LaTeX, then save to recompile"}
         </Text>
         <Group gap={6}>
           <SegmentedControl
@@ -48,7 +48,7 @@ export default function ResumePreview() {
             onChange={(v) => setMode(v as typeof mode)}
             data={[
               { label: "Formatted", value: "formatted" },
-              { label: "PDF", value: "pdf" },
+              { label: "LaTeX", value: "latex" },
             ]}
           />
           {session.pdf_url && (
@@ -61,8 +61,8 @@ export default function ResumePreview() {
         </Group>
       </Group>
 
-      <ScrollArea style={{ flex: 1 }} p="md" bg="var(--mantine-color-body)" type="auto">
-        {mode === "formatted" ? (
+      {mode === "formatted" ? (
+        <ScrollArea style={{ flex: 1 }} p="md" bg="var(--mantine-color-body)" type="auto">
           <ResumeDocument
             latex={session.latex}
             pendingSectionIds={pendingIds}
@@ -70,16 +70,12 @@ export default function ResumePreview() {
             onAddSection={addSection}
             onDeleteSection={removeSection}
           />
-        ) : session.pdf_url ? (
-          <Stack align="center" gap="xs">
-            <PdfCanvas url={session.pdf_url} scale={1.4} allPages />
-          </Stack>
-        ) : (
-          <Text c="dimmed" size="sm">
-            No compiled PDF yet.
-          </Text>
-        )}
-      </ScrollArea>
+        </ScrollArea>
+      ) : (
+        <Box p="md" style={{ flex: 1, minHeight: 0, display: "flex" }}>
+          <LatexEditor />
+        </Box>
+      )}
     </Paper>
   );
 }

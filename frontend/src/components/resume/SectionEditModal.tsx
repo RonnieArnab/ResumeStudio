@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, Group, Modal, Paper, Stack, Text, Textarea } from "@mantine/core";
 import { IconBulb } from "@tabler/icons-react";
 import { applyDiff, getStagedDiff, listStagedDiffs, rejectDiff, streamSectionEdit } from "../../api/agentStream";
@@ -29,6 +29,16 @@ export default function SectionEditModal({ sessionId, sectionId, onClose }: Sect
   const [applying, setApplying] = useState(false);
   const setSession = useStore((s) => s.setSession);
   const setStagedEdits = useStore((s) => s.setStagedEdits);
+  const pendingInstruction = useStore((s) => s.pendingSectionInstruction);
+  const setPendingInstruction = useStore((s) => s.setPendingSectionInstruction);
+
+  // when opened from a match-report suggestion, pre-fill the instruction
+  useEffect(() => {
+    if (sectionId && pendingInstruction) {
+      setInstruction(pendingInstruction);
+      setPendingInstruction(null);
+    }
+  }, [sectionId, pendingInstruction, setPendingInstruction]);
 
   const close = () => {
     setInstruction("");

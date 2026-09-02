@@ -1,9 +1,9 @@
 import { Container, ScrollArea, Stack, Title, Text } from "@mantine/core";
 import { useStore } from "../../state/store";
 import SplitPane from "../layout/SplitPane";
-import ChatPanel from "./ChatPanel";
 import ResumeDropzone from "./ResumeDropzone";
 import ResumePreview from "./ResumePreview";
+import RightPane from "./RightPane";
 import SectionEditModal from "./SectionEditModal";
 
 export default function ResumeWorkspace() {
@@ -41,7 +41,7 @@ export default function ResumeWorkspace() {
         }
         right={
           <div style={{ height: "100%", padding: "var(--mantine-spacing-md)" }}>
-            <ChatPanel sessionId={session.session_id} />
+            <RightPane sessionId={session.session_id} />
           </div>
         }
       />

@@ -5,7 +5,13 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.api.routes.compile import recompile_session
-from app.models.resume import ResumeUploadResponse, ResumeSessionResponse, SectionFragment, SectionSummary
+from app.models.resume import (
+    LatexUpdateResult,
+    ResumeUploadResponse,
+    ResumeSessionResponse,
+    SectionFragment,
+    SectionSummary,
+)
 from app.services.latex.sectioner import (
     TEMPLATES_DIR,
     create_latex_jinja_env,
@@ -13,9 +19,13 @@ from app.services.latex.sectioner import (
     parse_sections,
     render_document,
 )
+from app.services.latex.validator import validate_latex
 from app.services.resume_parser.docx_to_text import extract_text_from_docx
 from app.services.resume_parser.pdf_to_text import extract_text_from_pdf
 from app.services.resume_parser.text_to_latex import parse_resume_text, render_sections
+from app.services.resume_score.analyzer import analyze
+from app.services.resume_score.models import MatchReport, MatchReportRequest
+from app.services.jobs.resume_text import latex_to_plain_text
 from app.services.session.models import ResumeSession
 from app.services.session.session_store import session_store
 
@@ -75,6 +85,63 @@ async def get_resume(session_id: str) -> ResumeSessionResponse:
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_response(session)
+
+
+class UpdateLatexRequest(BaseModel):
+    latex: str
+
+
+@router.put("/{session_id}/latex", response_model=LatexUpdateResult)
+async def update_resume_latex(session_id: str, body: UpdateLatexRequest) -> LatexUpdateResult:
+    """Replace the whole LaTeX document with hand-edited source, then
+    recompile. Structural mistakes (unbalanced braces / environments) are
+    rejected up front; anything the fast check passes is saved and the
+    compiler's own errors, if any, come back in `compile_errors`."""
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    latex = body.latex.strip()
+    if not latex:
+        raise HTTPException(status_code=400, detail="The LaTeX document can't be empty")
+
+    # check_commands=False: same rationale as recompile_session — this is the
+    # full, user-owned document, so only brace/environment structure is checked.
+    structural = validate_latex(latex, check_commands=False)
+    if not structural.valid:
+        raise HTTPException(status_code=422, detail=" · ".join(structural.errors))
+
+    session_store.update_latex(session_id, latex)
+    result = recompile_session(session_id, latex)
+
+    base = _session_response(session_store.get(session_id))
+    return LatexUpdateResult(**base.model_dump(), compile_errors=result.validation_errors)
+
+
+@router.get("/{session_id}/match-report", response_model=MatchReport | None)
+async def get_match_report(session_id: str) -> MatchReport | None:
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return MatchReport(**session.match_report) if session.match_report else None
+
+
+@router.post("/{session_id}/match-report", response_model=MatchReport)
+async def create_match_report(session_id: str, body: MatchReportRequest) -> MatchReport:
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    jd = body.job_description.strip()
+    if len(jd) < 40:
+        raise HTTPException(status_code=400, detail="Paste the full job description first")
+
+    section_ids = [sid for sid in parse_sections(session.latex) if sid != "header"]
+    report = await analyze(latex_to_plain_text(session.latex), jd, section_ids)
+
+    session_store.update_job_description(session_id, jd)
+    session_store.set_match_report(session_id, report.model_dump(mode="json"))
+    return report
 
 
 class AddSectionRequest(BaseModel):

@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from app.services.session.models import ChatMessage, ResumeSession, SectionFragmentRef, StagedEdit
+from app.services.session.models import (
+    ChatMessage,
+    ResumeSession,
+    SectionFragmentRef,
+    StagedEdit,
+)
 
 
 class SessionStore:
@@ -25,7 +30,9 @@ class SessionStore:
         session.updated_at = datetime.now(timezone.utc)
         return session
 
-    def update_pdf_url(self, session_id: str, pdf_url: str | None) -> ResumeSession | None:
+    def update_pdf_url(
+        self, session_id: str, pdf_url: str | None
+    ) -> ResumeSession | None:
         session = self._sessions.get(session_id)
         if session is None:
             return None
@@ -33,7 +40,9 @@ class SessionStore:
         session.updated_at = datetime.now(timezone.utc)
         return session
 
-    def update_section_fragments(self, session_id: str, fragments: list[SectionFragmentRef]) -> ResumeSession | None:
+    def update_section_fragments(
+        self, session_id: str, fragments: list[SectionFragmentRef]
+    ) -> ResumeSession | None:
         session = self._sessions.get(session_id)
         if session is None:
             return None
@@ -41,11 +50,15 @@ class SessionStore:
         session.updated_at = datetime.now(timezone.utc)
         return session
 
-    def stage_edit(self, session_id: str, section_id: str, new_latex: str, rationale: str) -> None:
+    def stage_edit(
+        self, session_id: str, section_id: str, new_latex: str, rationale: str
+    ) -> None:
         session = self._sessions.get(session_id)
         if session is None:
             return
-        session.staged_edits[section_id] = StagedEdit(section_id=section_id, new_latex=new_latex, rationale=rationale)
+        session.staged_edits[section_id] = StagedEdit(
+            section_id=section_id, new_latex=new_latex, rationale=rationale
+        )
         session.updated_at = datetime.now(timezone.utc)
 
     def clear_staged_edit(self, session_id: str, section_id: str) -> None:
@@ -55,11 +68,20 @@ class SessionStore:
         session.staged_edits.pop(section_id, None)
         session.updated_at = datetime.now(timezone.utc)
 
-    def update_job_description(self, session_id: str, job_description: str | None) -> None:
+    def update_job_description(
+        self, session_id: str, job_description: str | None
+    ) -> None:
         session = self._sessions.get(session_id)
         if session is None:
             return
         session.job_description = job_description
+        session.updated_at = datetime.now(timezone.utc)
+
+    def set_match_report(self, session_id: str, report: dict | None) -> None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        session.match_report = report
         session.updated_at = datetime.now(timezone.utc)
 
     def append_chat_message(self, session_id: str, role: str, text: str) -> None:

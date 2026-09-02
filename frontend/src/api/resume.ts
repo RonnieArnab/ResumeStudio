@@ -1,5 +1,5 @@
 import { apiClient } from "./client";
-import type { CompileResponse, ResumeSession } from "../types/resume";
+import type { CompileResponse, LatexUpdateResult, MatchReport, ResumeSession } from "../types/resume";
 
 export function uploadResume(file: File): Promise<ResumeSession> {
   const form = new FormData();
@@ -21,4 +21,16 @@ export function addResumeSection(sessionId: string, title: string): Promise<Resu
 
 export function deleteResumeSection(sessionId: string, sectionId: string): Promise<ResumeSession> {
   return apiClient.del<ResumeSession>(`/api/resume/${sessionId}/sections/${sectionId}`);
+}
+
+export function updateResumeLatex(sessionId: string, latex: string): Promise<LatexUpdateResult> {
+  return apiClient.put<LatexUpdateResult>(`/api/resume/${sessionId}/latex`, { latex });
+}
+
+export function getMatchReport(sessionId: string): Promise<MatchReport | null> {
+  return apiClient.get<MatchReport | null>(`/api/resume/${sessionId}/match-report`);
+}
+
+export function createMatchReport(sessionId: string, jobDescription: string): Promise<MatchReport> {
+  return apiClient.post<MatchReport>(`/api/resume/${sessionId}/match-report`, { job_description: jobDescription });
 }

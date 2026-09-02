@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ActionIcon, Paper, ScrollArea, Stack, Text, Textarea } from "@mantine/core";
+import { ActionIcon, Box, Paper, ScrollArea, Stack, Text, Textarea } from "@mantine/core";
 import { IconSend } from "@tabler/icons-react";
 import { getChatHistory, streamChatMessage } from "../../api/chat";
 import { listStagedDiffs } from "../../api/agentStream";
@@ -68,7 +68,7 @@ export default function ChatPanel({ sessionId }: ChatPanelProps) {
   }
 
   return (
-    <Paper withBorder radius="md" h="100%" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <Box style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", flex: 1 }}>
       <Stack gap="xs" p="sm">
         <JobDescriptionField />
       </Stack>
@@ -125,6 +125,6 @@ export default function ChatPanel({ sessionId }: ChatPanelProps) {
           }
         />
       </Stack>
-    </Paper>
+    </Box>
   );
 }

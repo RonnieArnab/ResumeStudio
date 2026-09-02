@@ -30,6 +30,7 @@ class ResumeSession:
     section_fragments: list[SectionFragmentRef] = field(default_factory=list)
     staged_edits: dict[str, StagedEdit] = field(default_factory=dict)
     job_description: str | None = None
+    match_report: dict | None = None  # last resume ⇄ JD match report (serialized)
     chat_history: list[ChatMessage] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

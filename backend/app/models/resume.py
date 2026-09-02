@@ -23,6 +23,15 @@ class ResumeSessionResponse(ResumeUploadResponse):
     pass
 
 
+class LatexUpdateResult(ResumeSessionResponse):
+    """The saved session plus any errors from the recompile it triggered.
+    The edited LaTeX is persisted regardless — a document that doesn't
+    compile still renders in the client-side "Formatted" view and can be
+    fixed from the editor — so these are surfaced, not raised."""
+
+    compile_errors: list[str] = []
+
+
 class SectionBox(BaseModel):
     """Reserved for a future true-SyncTeX overlay on the single merged PDF.
     Left empty by the fragment-render approach used for section-click
